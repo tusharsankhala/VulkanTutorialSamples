@@ -21,6 +21,8 @@ import vulkan_hpp;
 constexpr uint32_t WIDTH = 800;
 constexpr uint32_t HEIGHT = 600;
 
+constexpr int MAX_FRAMES_IN_FLIGHT = 2;
+
 const std::vector<char const*> validationLayers = {
 	"VK_LAYER_KHRONOS_validation" };
 
@@ -43,29 +45,32 @@ public:
 
 private:
 	GLFWwindow* window = nullptr;
-	vk::raii::Context                context;
-	vk::raii::Instance               instance = nullptr;
-	vk::raii::DebugUtilsMessengerEXT debugMessenger = nullptr;
-	vk::raii::SurfaceKHR             surface = nullptr;
-	vk::raii::PhysicalDevice         physicalDevice = nullptr;
-	vk::raii::Device                 device = nullptr;
-	uint32_t                         queueIndex = ~0;
-	vk::raii::Queue                  queue = nullptr;
-	vk::raii::SwapchainKHR           swapChain = nullptr;
-	std::vector<vk::Image>           swapChainImages;
-	vk::SurfaceFormatKHR             swapChainSurfaceFormat;
-	vk::Extent2D                     swapChainExtent;
-	std::vector<vk::raii::ImageView> swapChainImageViews;
+	vk::raii::Context						context;
+	vk::raii::Instance						instance = nullptr;
+	vk::raii::DebugUtilsMessengerEXT		debugMessenger = nullptr;
+	vk::raii::SurfaceKHR					surface = nullptr;
+	vk::raii::PhysicalDevice				physicalDevice = nullptr;
+	vk::raii::Device						device = nullptr;
+	uint32_t								queueIndex = ~0;
+	vk::raii::Queue							queue = nullptr;
+	vk::raii::SwapchainKHR					swapChain = nullptr;
+	std::vector<vk::Image>					swapChainImages;
+	vk::SurfaceFormatKHR					swapChainSurfaceFormat;
+	vk::Extent2D							swapChainExtent;
+	std::vector<vk::raii::ImageView>		swapChainImageViews;
 
-	vk::raii::PipelineLayout pipelineLayout = nullptr;
-	vk::raii::Pipeline       graphicsPipeline = nullptr;
+	vk::raii::PipelineLayout				pipelineLayout = nullptr;
+	vk::raii::Pipeline						graphicsPipeline = nullptr;
 
-	vk::raii::CommandPool   commandPool = nullptr;
-	vk::raii::CommandBuffer commandBuffer = nullptr;
+	vk::raii::CommandPool					commandPool = nullptr;
+	std::vector<vk::raii::CommandBuffer>	commandBuffers;
 
-	vk::raii::Semaphore presentCompleteSemaphore = nullptr;
-	vk::raii::Semaphore renderFinishedSemaphore = nullptr;
-	vk::raii::Fence     drawFence = nullptr;
+	std::vector<vk::raii::Semaphore>		presentCompleteSemaphores;
+	std::vector<vk::raii::Semaphore>		renderFinishedSemaphores;
+	std::vector<vk::raii::Fence>			inFlightFences;
+	uint32_t								frameIndex = 0;
+
+	bool									isFrameBufferResized = false;
 
 	std::vector<const char*> requiredDeviceExtension = {
 		vk::KHRSwapchainExtensionName };
@@ -75,10 +80,19 @@ private:
 		glfwInit();
 
 		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-		glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+		glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
 		window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan", nullptr, nullptr);
+		glfwSetWindowUserPointer(window, this);
+		glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
 	}
+
+	static void framebufferResizeCallback( GLFWwindow* window, int width, int height)
+	{
+		auto app = reinterpret_cast<HelloTriangleApplication*>(glfwGetWindowUserPointer(window));
+		app->isFrameBufferResized = true;
+	}
+
 
 	void initVulkan()
 	{
@@ -102,23 +116,49 @@ private:
 			glfwPollEvents();
 			drawFrame();
 		}
+		
 		device.waitIdle();        // wait for device to finish operations before destroying resources
+	}
+
+	void cleanupSwapchain()
+	{
+		swapChainImageViews.clear();
+		swapChain = nullptr;
 	}
 
 	void cleanup()
 	{
+		cleanupSwapchain();
+
 		glfwDestroyWindow(window);
 
 		glfwTerminate();
 	}
 
+	void recreateSwapChain()
+	{
+		int width = 0, height = 0;
+		glfwGetFramebufferSize(window, &width, &height);
+
+		while (width == 0 || height == 0)
+		{
+			glfwGetFramebufferSize(window, &width, &height);
+			glfwWaitEvents();
+		}
+
+		device.waitIdle();
+		cleanupSwapchain();
+		createSwapChain();
+		createImageViews();
+	}
+
 	void createInstance()
 	{
-		constexpr vk::ApplicationInfo appInfo{ .pApplicationName = "Hello Triangle",
-											  .applicationVersion = VK_MAKE_VERSION(1, 0, 0),
-											  .pEngineName = "No Engine",
-											  .engineVersion = VK_MAKE_VERSION(1, 0, 0),
-											  .apiVersion = vk::ApiVersion14 };
+		constexpr vk::ApplicationInfo appInfo{	.pApplicationName	= "Hello Triangle",
+												.applicationVersion = VK_MAKE_VERSION(1, 0, 0),
+												.pEngineName		= "No Engine",
+												.engineVersion		= VK_MAKE_VERSION(1, 0, 0),
+												.apiVersion			= vk::ApiVersion14 };
 
 		// Get the required layers
 		std::vector<char const*> requiredLayers;
@@ -376,12 +416,14 @@ private:
 
 	void createCommandBuffer()
 	{
-		vk::CommandBufferAllocateInfo allocInfo{ .commandPool = commandPool, .level = vk::CommandBufferLevel::ePrimary, .commandBufferCount = 1 };
-		commandBuffer = std::move(vk::raii::CommandBuffers(device, allocInfo).front());
+		vk::CommandBufferAllocateInfo allocInfo{ .commandPool = commandPool, .level = vk::CommandBufferLevel::ePrimary, .commandBufferCount = MAX_FRAMES_IN_FLIGHT };
+		commandBuffers = vk::raii::CommandBuffers(device, allocInfo);
 	}
 
 	void recordCommandBuffer(uint32_t imageIndex)
 	{
+		auto& commandBuffer = commandBuffers[frameIndex];
+
 		commandBuffer.begin({});
 		// Before starting rendering, transition the swapchain image to COLOR_ATTACHMENT_OPTIMAL
 		transition_image_layout(
@@ -454,46 +496,95 @@ private:
 			.dependencyFlags = {},
 			.imageMemoryBarrierCount = 1,
 			.pImageMemoryBarriers = &barrier };
-		commandBuffer.pipelineBarrier2(dependency_info);
+		commandBuffers[frameIndex].pipelineBarrier2(dependency_info);
 	}
 
 	void createSyncObjects()
 	{
-		presentCompleteSemaphore = vk::raii::Semaphore(device, vk::SemaphoreCreateInfo());
-		renderFinishedSemaphore = vk::raii::Semaphore(device, vk::SemaphoreCreateInfo());
-		drawFence = vk::raii::Fence(device, { .flags = vk::FenceCreateFlagBits::eSignaled });
+		assert(presentCompleteSemaphores.empty() && renderFinishedSemaphores.empty() && inFlightFences.empty());
+		
+		for (int i = 0; i < swapChainImages.size(); i++)
+		{
+			renderFinishedSemaphores.emplace_back(device, vk::SemaphoreCreateInfo());	
+		}
+
+		for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+		{
+			presentCompleteSemaphores.emplace_back(device, vk::SemaphoreCreateInfo());
+			inFlightFences.emplace_back(device, vk::FenceCreateInfo{ .flags = vk::FenceCreateFlagBits::eSignaled });
+		}
 	}
 
 	void drawFrame()
 	{
-		queue.waitIdle();        // NOTE: for simplicity, wait for the queue to be idle before starting the frame
-		// In the next chapter you see how to use multiple frames in flight and fences to sync
-
-		auto [result, imageIndex] = swapChain.acquireNextImage(UINT64_MAX, *presentCompleteSemaphore, nullptr);
-		recordCommandBuffer(imageIndex);
-
-		device.resetFences(*drawFence);
-		vk::PipelineStageFlags waitDestinationStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput);
-		const vk::SubmitInfo   submitInfo{ .waitSemaphoreCount = 1, .pWaitSemaphores = &*presentCompleteSemaphore, .pWaitDstStageMask = &waitDestinationStageMask, .commandBufferCount = 1, .pCommandBuffers = &*commandBuffer, .signalSemaphoreCount = 1, .pSignalSemaphores = &*renderFinishedSemaphore };
-		queue.submit(submitInfo, *drawFence);
-		result = device.waitForFences(*drawFence, vk::True, UINT64_MAX);
-		if (result != vk::Result::eSuccess)
+		// Note: inFlightFences, presentCompleteSemaphores, and commandBuffers are indexed by frameIndex,
+		//       while renderFinishedSemaphores is indexed by imageIndex
+		auto fenceResult = device.waitForFences(*inFlightFences[frameIndex], vk::True, UINT64_MAX);
+		if (fenceResult != vk::Result::eSuccess)
 		{
 			throw std::runtime_error("failed to wait for fence!");
 		}
 
-		const vk::PresentInfoKHR presentInfoKHR{ .waitSemaphoreCount = 1, .pWaitSemaphores = &*renderFinishedSemaphore, .swapchainCount = 1, .pSwapchains = &*swapChain, .pImageIndices = &imageIndex };
-		result = queue.presentKHR(presentInfoKHR);
-		switch (result)
+		auto [result, imageIndex] = swapChain.acquireNextImage(UINT64_MAX, *presentCompleteSemaphores[frameIndex], nullptr);
+
+		// Due to VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_KHR begin defined,
+		// if acquireNextImage returns eErrorOutOfDateKHR, the swapchain is already out of date and needs to be recreated.
+		if( result == vk::Result::eErrorOutOfDateKHR )
 		{
-		case vk::Result::eSuccess:
-			break;
-		case vk::Result::eSuboptimalKHR:
-			std::cout << "vk::Queue::presentKHR returned vk::Result::eSuboptimalKHR !\n";
-			break;
-		default:
-			break;        // an unexpected result is returned!
+			recreateSwapChain();
+			return;
 		}
+
+		// On other success codes than eSuccess and eSuboptimalKHR, we just throw an exception.
+		// On any error codes, acquireNextImage already threw adn exception.
+		else if (result != vk::Result::eSuccess && result != vk::Result::eSuboptimalKHR)
+		{
+			assert(result == vk::Result::eTimeout || result == vk::Result::eNotReady);
+			throw std::runtime_error("failed to acquire swap chain image!");
+		}
+
+		// Only reset the fence if we are submitting work.
+		device.resetFences(*inFlightFences[frameIndex]);
+
+		commandBuffers[frameIndex].reset();
+		recordCommandBuffer(imageIndex);
+
+		vk::PipelineStageFlags waitDestinationStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput);
+		const vk::SubmitInfo   submitInfo{ .waitSemaphoreCount		= 1,
+										   .pWaitSemaphores			= &*presentCompleteSemaphores[frameIndex],
+										   .pWaitDstStageMask		= &waitDestinationStageMask,
+										   .commandBufferCount		= 1,
+										   .pCommandBuffers			= &*commandBuffers[frameIndex],
+										   .signalSemaphoreCount	= 1,
+										   .pSignalSemaphores		= &*renderFinishedSemaphores[imageIndex]
+		};
+
+		queue.submit(submitInfo, *inFlightFences[frameIndex]);
+		
+		const vk::PresentInfoKHR presentInfoKHR{ .waitSemaphoreCount = 1,
+												 .pWaitSemaphores = &*renderFinishedSemaphores[imageIndex],
+												 .swapchainCount = 1,
+												 .pSwapchains = &*swapChain,
+												 .pImageIndices = &imageIndex
+		};
+
+		result = queue.presentKHR(presentInfoKHR);
+
+		// Due to the VULKAN_HPP_HANDLE_ERROR_OUT_OF_AS_SUCCESS begin defined, eErrorOutOfDateKHR
+		// can be checked as the result.
+		// here and does not need to be caught by the exception.
+		if ((result == vk::Result::eSuboptimalKHR) || (result != vk::Result::eErrorOutOfDateKHR) || isFrameBufferResized)
+		{
+			isFrameBufferResized = false;
+			recreateSwapChain();
+		}
+		else
+		{
+			// There are no other success codes than eSuccess; on any error code, presentKHR already threw an exception.
+			assert (result == vk::Result::eSuccess);
+		}
+
+		frameIndex = (frameIndex + 1) % MAX_FRAMES_IN_FLIGHT;
 	}
 
 	[[nodiscard]] vk::raii::ShaderModule createShaderModule(const std::vector<char>& code) const
