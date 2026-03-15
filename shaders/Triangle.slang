@@ -1,13 +1,22 @@
-static float2 positions[3] = float2[](
-    float2(0.0f, -0.5f),
-	float2(0.5f, 0.5f),
-    float2(-0.5f, 0.5f),    
+static float2 positions[6] = float2[](
+    float2(-0.5f, -0.5f),
+	float2(-0.1f, 0.5f),
+    float2(-0.9f, 0.5f), 
+
+    float2(0.5f, -0.5f),
+	float2(0.9f, 0.5f),
+    float2(0.1f, 0.5f), 
+	
 );
 
-static float3 colors[3] = float3[](
+static float3 colors[6] = float3[](
     float3(1.0f, 0.0f, 0.0f),
     float3(0.0f, 1.0f, 0.0f),
     float3(0.0f, 0.0f, 1.0f),
+	
+	float3(1.0f, 1.0f, 0.0f),
+    float3(0.0f, 1.0f, 1.0f),
+    float3(1.0f, 0.0f, 1.0f),
 );
 
 
