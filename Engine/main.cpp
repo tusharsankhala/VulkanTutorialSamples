@@ -8,6 +8,7 @@
 #include <memory>
 #include <stdexcept>
 #include <vector>
+#include <glm/glm.hpp>
 
 #if defined(__INTELLISENSE__) || !defined(USE_CPP20_MODULES)
 #	include <vulkan/vulkan_raii.hpp>
@@ -32,6 +33,38 @@ constexpr bool enableValidationLayers = false;
 constexpr bool enableValidationLayers = true;
 #endif
 
+struct VertexData
+{
+	glm::vec2	pos;
+	glm::vec3	color;
+
+	static vk::VertexInputBindingDescription getBindingDescription()
+	{
+		return { 0, sizeof(VertexData), vk::VertexInputRate::eVertex };
+	}
+
+
+	static std::array<vk::VertexInputAttributeDescription, 2> getAttributeDescriptions()
+	{
+		return
+		{
+			vk::VertexInputAttributeDescription(0, 0, vk::Format::eR32G32Sfloat, offsetof(VertexData, pos)),
+			vk::VertexInputAttributeDescription(1, 0, vk::Format::eR32G32B32Sfloat, offsetof(VertexData, color)),
+		};
+	}
+};
+
+const std::vector<VertexData> vertices = {
+	{{ -0.5f, -0.5f }, { 1.0f, 0.0f, 0.0f }},
+	{{ -0.1f,  0.5f }, { 0.0f, 1.0f, 0.0f }},
+	{{ -0.9f,  0.5f }, { 0.0f, 0.0f, 1.0f }},
+
+	{{ 0.5f, -0.5f }, { 1.0f, 1.0f, 0.0f }},
+	{{ 0.9f,  0.5f }, { 0.0f, 1.0f, 1.0f }},
+	{{ 0.1f,  0.5f }, { 1.0f, 0.0f, 1.0f }}
+};
+
+
 class HelloTriangleApplication
 {
 public:
@@ -46,31 +79,34 @@ public:
 private:
 	GLFWwindow* window = nullptr;
 	vk::raii::Context						context;
-	vk::raii::Instance						instance = nullptr;
-	vk::raii::DebugUtilsMessengerEXT		debugMessenger = nullptr;
-	vk::raii::SurfaceKHR					surface = nullptr;
-	vk::raii::PhysicalDevice				physicalDevice = nullptr;
-	vk::raii::Device						device = nullptr;
-	uint32_t								queueIndex = ~0;
-	vk::raii::Queue							queue = nullptr;
-	vk::raii::SwapchainKHR					swapChain = nullptr;
+	vk::raii::Instance						instance				= nullptr;
+	vk::raii::DebugUtilsMessengerEXT		debugMessenger			= nullptr;
+	vk::raii::SurfaceKHR					surface					= nullptr;
+	vk::raii::PhysicalDevice				physicalDevice			= nullptr;
+	vk::raii::Device						device					= nullptr;
+	uint32_t								queueIndex				= ~0;
+	vk::raii::Queue							queue					= nullptr;
+	vk::raii::SwapchainKHR					swapChain				= nullptr;
 	std::vector<vk::Image>					swapChainImages;
 	vk::SurfaceFormatKHR					swapChainSurfaceFormat;
 	vk::Extent2D							swapChainExtent;
 	std::vector<vk::raii::ImageView>		swapChainImageViews;
 
-	vk::raii::PipelineLayout				pipelineLayout = nullptr;
-	vk::raii::Pipeline						graphicsPipeline = nullptr;
+	vk::raii::PipelineLayout				pipelineLayout			= nullptr;
+	vk::raii::Pipeline						graphicsPipeline		= nullptr;
 
-	vk::raii::CommandPool					commandPool = nullptr;
+	vk::raii::CommandPool					commandPool				= nullptr;
 	std::vector<vk::raii::CommandBuffer>	commandBuffers;
 
 	std::vector<vk::raii::Semaphore>		presentCompleteSemaphores;
 	std::vector<vk::raii::Semaphore>		renderFinishedSemaphores;
 	std::vector<vk::raii::Fence>			inFlightFences;
-	uint32_t								frameIndex = 0;
+	uint32_t								frameIndex				= 0;
 
-	bool									isFrameBufferResized = false;
+	bool									isFrameBufferResized	= false;
+
+	vk::raii::Buffer						vertexBuffer			= nullptr;
+	vk::raii::DeviceMemory					vertexBufferMemory		= nullptr;
 
 	std::vector<const char*> requiredDeviceExtension = {
 		vk::KHRSwapchainExtensionName };
@@ -105,6 +141,7 @@ private:
 		createImageViews();
 		createGraphicsPipeline();
 		createCommandPool();
+		createVertexBuffer();
 		createCommandBuffer();
 		createSyncObjects();
 	}
@@ -368,50 +405,87 @@ private:
 		vk::PipelineShaderStageCreateInfo fragShaderStageInfo{ .stage = vk::ShaderStageFlagBits::eFragment, .module = shaderModule, .pName = "fragMain" };
 		vk::PipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo, fragShaderStageInfo };
 
-		vk::PipelineVertexInputStateCreateInfo   vertexInputInfo;
-		vk::PipelineInputAssemblyStateCreateInfo inputAssembly{ .topology = vk::PrimitiveTopology::eTriangleList };
-		vk::PipelineViewportStateCreateInfo      viewportState{ .viewportCount = 1, .scissorCount = 1 };
+		auto										bindingDescription = VertexData::getBindingDescription();
+		auto										attributeDescriptions = VertexData::getAttributeDescriptions();
 
-		vk::PipelineRasterizationStateCreateInfo rasterizer{ .depthClampEnable = vk::False, .rasterizerDiscardEnable = vk::False, .polygonMode = vk::PolygonMode::eFill, .cullMode = vk::CullModeFlagBits::eBack, .frontFace = vk::FrontFace::eClockwise, .depthBiasEnable = vk::False, .depthBiasSlopeFactor = 1.0f, .lineWidth = 1.0f };
+		vk::PipelineVertexInputStateCreateInfo		vertexInputInfo{ .vertexBindingDescriptionCount		= 1,
+																	 .pVertexBindingDescriptions		= &bindingDescription,
+																	 .vertexAttributeDescriptionCount	= static_cast<uint32_t>(attributeDescriptions.size()),
+																	 .pVertexAttributeDescriptions		= attributeDescriptions.data() };
 
-		vk::PipelineMultisampleStateCreateInfo multisampling{ .rasterizationSamples = vk::SampleCountFlagBits::e1, .sampleShadingEnable = vk::False };
 
-		vk::PipelineColorBlendAttachmentState colorBlendAttachment{ .blendEnable = vk::False,
+
+		vk::PipelineInputAssemblyStateCreateInfo	inputAssembly{ .topology = vk::PrimitiveTopology::eTriangleList };
+		vk::PipelineViewportStateCreateInfo			viewportState{ .viewportCount = 1, .scissorCount = 1 };
+
+		vk::PipelineRasterizationStateCreateInfo	rasterizer{ .depthClampEnable = vk::False, .rasterizerDiscardEnable = vk::False, .polygonMode = vk::PolygonMode::eFill, .cullMode = vk::CullModeFlagBits::eBack, .frontFace = vk::FrontFace::eClockwise, .depthBiasEnable = vk::False, .depthBiasSlopeFactor = 1.0f, .lineWidth = 1.0f };
+
+		vk::PipelineMultisampleStateCreateInfo		multisampling{ .rasterizationSamples = vk::SampleCountFlagBits::e1, .sampleShadingEnable = vk::False };
+
+		vk::PipelineColorBlendAttachmentState		colorBlendAttachment{ .blendEnable = vk::False,
 																   .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA };
 
-		vk::PipelineColorBlendStateCreateInfo colorBlending{ .logicOpEnable = vk::False, .logicOp = vk::LogicOp::eCopy, .attachmentCount = 1, .pAttachments = &colorBlendAttachment };
+		vk::PipelineColorBlendStateCreateInfo		colorBlending{ .logicOpEnable = vk::False, .logicOp = vk::LogicOp::eCopy, .attachmentCount = 1, .pAttachments = &colorBlendAttachment };
 
 		std::vector dynamicStates = {
 			vk::DynamicState::eViewport,
 			vk::DynamicState::eScissor };
-		vk::PipelineDynamicStateCreateInfo dynamicState{ .dynamicStateCount = static_cast<uint32_t>(dynamicStates.size()), .pDynamicStates = dynamicStates.data() };
+		vk::PipelineDynamicStateCreateInfo			dynamicState{ .dynamicStateCount = static_cast<uint32_t>(dynamicStates.size()), .pDynamicStates = dynamicStates.data() };
 
-		vk::PipelineLayoutCreateInfo pipelineLayoutInfo{ .setLayoutCount = 0, .pushConstantRangeCount = 0 };
+		vk::PipelineLayoutCreateInfo				pipelineLayoutInfo{ .setLayoutCount = 0, .pushConstantRangeCount = 0 };
 
 		pipelineLayout = vk::raii::PipelineLayout(device, pipelineLayoutInfo);
 
 		vk::StructureChain<vk::GraphicsPipelineCreateInfo, vk::PipelineRenderingCreateInfo> pipelineCreateInfoChain = {
-			{.stageCount = 2,
-			 .pStages = shaderStages,
-			 .pVertexInputState = &vertexInputInfo,
-			 .pInputAssemblyState = &inputAssembly,
-			 .pViewportState = &viewportState,
-			 .pRasterizationState = &rasterizer,
-			 .pMultisampleState = &multisampling,
-			 .pColorBlendState = &colorBlending,
-			 .pDynamicState = &dynamicState,
-			 .layout = pipelineLayout,
-			 .renderPass = nullptr},
+			{.stageCount			= 2,
+			 .pStages				= shaderStages,
+			 .pVertexInputState		= &vertexInputInfo,
+			 .pInputAssemblyState	= &inputAssembly,
+			 .pViewportState		= &viewportState,
+			 .pRasterizationState	= &rasterizer,
+			 .pMultisampleState		= &multisampling,
+			 .pColorBlendState		= &colorBlending,
+			 .pDynamicState			= &dynamicState,
+			 .layout				= pipelineLayout,
+			 .renderPass			= nullptr
+			},
 			{.colorAttachmentCount = 1, .pColorAttachmentFormats = &swapChainSurfaceFormat.format} };
 
-		graphicsPipeline = vk::raii::Pipeline(device, nullptr, pipelineCreateInfoChain.get<vk::GraphicsPipelineCreateInfo>());
+		graphicsPipeline = vk::raii::Pipeline(device,
+											  nullptr,
+											  pipelineCreateInfoChain.get<vk::GraphicsPipelineCreateInfo>());
 	}
 
 	void createCommandPool()
 	{
 		vk::CommandPoolCreateInfo poolInfo{ .flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
 										   .queueFamilyIndex = queueIndex };
+		
 		commandPool = vk::raii::CommandPool(device, poolInfo);
+	}
+
+	void createVertexBuffer()
+	{
+		vk::BufferCreateInfo bufferCreateInfo = {
+			.size = sizeof(vertices[0]) * vertices.size(),
+			.usage = vk::BufferUsageFlagBits::eVertexBuffer,
+			.sharingMode = vk::SharingMode::eExclusive,
+		};
+
+		vertexBuffer = vk::raii::Buffer(device, bufferCreateInfo);
+
+		vk::MemoryRequirements memRequirements = vertexBuffer.getMemoryRequirements();
+		vk::MemoryAllocateInfo memAllocateInfo{
+			.allocationSize		= memRequirements.size,
+			.memoryTypeIndex	= findMemoryType(memRequirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent)
+		};
+
+		vertexBufferMemory = vk::raii::DeviceMemory(device, memAllocateInfo);
+		vertexBuffer.bindMemory(*vertexBufferMemory, 0);
+
+		void* data = vertexBufferMemory.mapMemory(0, bufferCreateInfo.size);
+		memcpy(data, vertices.data(), bufferCreateInfo.size);
+		vertexBufferMemory.unmapMemory();
 	}
 
 	void createCommandBuffer()
@@ -452,7 +526,11 @@ private:
 		commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *graphicsPipeline);
 		commandBuffer.setViewport(0, vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height), 0.0f, 1.0f));
 		commandBuffer.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapChainExtent));
-		commandBuffer.draw(6, 1, 0, 0);
+		commandBuffer.bindVertexBuffers(0, *vertexBuffer, {0});
+
+		uint32_t vertexCount = static_cast<uint32_t>(vertices.size());
+		commandBuffer.draw(vertexCount, 1, 0, 0);
+
 		commandBuffer.endRendering();
 		// After rendering, transition the swapchain image to PRESENT_SRC
 		transition_image_layout(
@@ -674,7 +752,24 @@ private:
 		file.close();
 		return buffer;
 	}
+
+	uint32_t findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties)
+	{
+		vk::PhysicalDeviceMemoryProperties memoryProperties = physicalDevice.getMemoryProperties();
+
+		for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i)
+		{
+			if ((typeFilter & (1 << i)) && (memoryProperties.memoryTypes[i].propertyFlags & properties) == properties)
+			{
+				return i;
+			}
+		}
+
+		throw std::runtime_error("Failed to find the suitable memory type");
+	}
 };
+
+
 
 int main()
 {
