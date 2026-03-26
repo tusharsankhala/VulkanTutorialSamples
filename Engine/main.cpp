@@ -16,7 +16,7 @@
 import vulkan_hpp;
 #endif
 
-#define GLFW_INCLUDE_VULKAN        // REQUIRED only for GLFW CreateWindowSurface.
+#define GLFW_INCLUDE_VULKAN										// REQUIRED only for GLFW CreateWindowSurface.
 #include <GLFW/glfw3.h>
 
 constexpr uint32_t WIDTH = 800;
@@ -458,17 +458,40 @@ private:
 
 	void createCommandPool()
 	{
-		vk::CommandPoolCreateInfo poolInfo{ .flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
-										   .queueFamilyIndex = queueIndex };
+		vk::CommandPoolCreateInfo poolInfo{	.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
+											.queueFamilyIndex = queueIndex
+		};
 		
 		commandPool = vk::raii::CommandPool(device, poolInfo);
 	}
 
 	void createVertexBuffer()
 	{
+		vk::DeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
+
+		vk::BufferCreateInfo stagingInfo = {
+			.size = bufferSize,
+			.usage = vk::BufferUsageFlagBits::eTransferSrc,
+			.sharingMode = vk::SharingMode::eExclusive,
+		};
+
+		vk::raii::Buffer stagingBuffer (device, stagingInfo);
+
+		vk::MemoryRequirements memRequirementsStaging = stagingBuffer.getMemoryRequirements();
+		vk::MemoryAllocateInfo memAllocateInfoStaging{
+			.allocationSize		= memRequirementsStaging.size,
+			.memoryTypeIndex	= findMemoryType(memRequirementsStaging.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent)
+		};
+
+		vk::raii::DeviceMemory stagingBufferMemory(device, memAllocateInfoStaging);
+		stagingBuffer.bindMemory(stagingBufferMemory, 0);
+		void* dataStaging = stagingBufferMemory.mapMemory(0, stagingInfo.size);
+		memcpy(dataStaging, vertices.data(), stagingInfo.size);
+		stagingBufferMemory.unmapMemory();
+
 		vk::BufferCreateInfo bufferCreateInfo = {
 			.size = sizeof(vertices[0]) * vertices.size(),
-			.usage = vk::BufferUsageFlagBits::eVertexBuffer,
+			.usage = vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eTransferDst,
 			.sharingMode = vk::SharingMode::eExclusive,
 		};
 
@@ -477,15 +500,40 @@ private:
 		vk::MemoryRequirements memRequirements = vertexBuffer.getMemoryRequirements();
 		vk::MemoryAllocateInfo memAllocateInfo{
 			.allocationSize		= memRequirements.size,
-			.memoryTypeIndex	= findMemoryType(memRequirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent)
+			.memoryTypeIndex	= findMemoryType(memRequirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)
 		};
 
 		vertexBufferMemory = vk::raii::DeviceMemory(device, memAllocateInfo);
 		vertexBuffer.bindMemory(*vertexBufferMemory, 0);
 
-		void* data = vertexBufferMemory.mapMemory(0, bufferCreateInfo.size);
-		memcpy(data, vertices.data(), bufferCreateInfo.size);
-		vertexBufferMemory.unmapMemory();
+		copyBuffer(stagingBuffer, vertexBuffer, stagingInfo.size);
+	}
+
+	void copyBuffer(vk::raii::Buffer& srcBuffer, vk::raii::Buffer& dstBuffer, vk::DeviceSize size)
+	{
+		vk::CommandBufferAllocateInfo allocInfo
+		{
+			.commandPool		= commandPool,
+			.level				= vk::CommandBufferLevel::ePrimary,
+			.commandBufferCount = 1
+		};
+
+		vk::raii::CommandBuffer commandCopyBuffer = std::move(device.allocateCommandBuffers(allocInfo).front());
+
+		commandCopyBuffer.begin(vk::CommandBufferBeginInfo
+			{
+				.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit
+			});
+
+		commandCopyBuffer.copyBuffer(*srcBuffer, *dstBuffer, vk::BufferCopy(0, 0, size));
+		commandCopyBuffer.end();
+		queue.submit(vk::SubmitInfo{
+			.commandBufferCount = 1,
+			.pCommandBuffers = &*commandCopyBuffer
+			},
+			nullptr);
+
+		queue.waitIdle();
 	}
 
 	void createCommandBuffer()
